@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import PageLoader from '../components/PageLoader'
+import { apiFetch } from '../lib/api'
 
 const KPI_RANGES = {
   '7d': {
@@ -273,7 +274,7 @@ export default function DashboardEjecutivoPage({ onNavigate }) {
   const [kpiRange, setKpiRange] = useState('7d')
 
   const fetchDashboardData = useCallback(async () => {
-    const res = await fetch('/api/dashboard/ejecutivo')
+    const res = await apiFetch('/api/dashboard/ejecutivo')
     if (!res.ok) return null
     const json = await res.json()
     return json.ok ? json.data : null

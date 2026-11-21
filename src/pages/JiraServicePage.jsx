@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import PageLoader from '../components/PageLoader'
+import { apiFetch } from '../lib/api'
 
 const FALLBACK_TICKETS = [
   {
@@ -54,7 +55,7 @@ export default function JiraServicePage() {
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/jira/tickets')
+    apiFetch('/api/jira/tickets')
       .then((res) => (res.ok ? res.json() : null))
       .then((json) => {
         if (!cancelled && json?.ok) {

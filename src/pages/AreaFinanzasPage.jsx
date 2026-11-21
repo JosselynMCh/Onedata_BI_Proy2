@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import PageLoader from '../components/PageLoader'
+import { apiFetch } from '../lib/api'
 
 const MONTH_NAMES = {
   1: 'Ene',
@@ -23,7 +24,7 @@ export default function AreaFinanzasPage({ onNavigate }) {
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/areas/finanzas')
+    apiFetch('/api/areas/finanzas')
       .then((res) => (res.ok ? res.json() : null))
       .then((json) => {
         if (!cancelled && json?.ok) {

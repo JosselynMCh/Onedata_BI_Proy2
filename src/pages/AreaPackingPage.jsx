@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import PageLoader from '../components/PageLoader'
+import { apiFetch } from '../lib/api'
 
 export default function AreaPackingPage() {
   const [data, setData] = useState(null)
@@ -9,7 +10,7 @@ export default function AreaPackingPage() {
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/areas/packing')
+    apiFetch('/api/areas/packing')
       .then((res) => (res.ok ? res.json() : null))
       .then((json) => {
         if (!cancelled && json?.ok) {

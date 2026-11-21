@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import PageLoader from '../components/PageLoader'
+import { apiFetch } from '../lib/api'
 
 const PERIOD_COMPARISON = [
   {
@@ -211,7 +212,7 @@ export default function ResumenCorporativoPage({ onNavigate }) {
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/dashboard/resumen-corporativo')
+    apiFetch('/api/dashboard/resumen-corporativo')
       .then((res) => (res.ok ? res.json() : null))
       .then((json) => {
         if (!cancelled && json?.ok) {

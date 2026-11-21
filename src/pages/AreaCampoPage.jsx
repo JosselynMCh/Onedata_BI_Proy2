@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import PageLoader from '../components/PageLoader'
 import ProductionGoogleMap from '../components/ProductionGoogleMap'
+import { apiFetch } from '../lib/api'
 
 const CROP_COLORS = ['#0d6efd', '#16a34a', '#f59e0b', '#7c3aed']
 
@@ -12,7 +13,7 @@ export default function AreaCampoPage() {
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/areas/campo')
+    apiFetch('/api/areas/campo')
       .then((res) => (res.ok ? res.json() : null))
       .then((json) => {
         if (!cancelled && json?.ok) {

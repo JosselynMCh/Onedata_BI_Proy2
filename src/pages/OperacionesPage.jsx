@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import PageLoader from '../components/PageLoader'
+import { apiFetch } from '../lib/api'
 
 function PackingLineBarChart({ lines }) {
   const rows =
@@ -113,7 +114,7 @@ export default function OperacionesPage({ onNavigate }) {
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/dashboard/operaciones')
+    apiFetch('/api/dashboard/operaciones')
       .then((res) => (res.ok ? res.json() : null))
       .then((json) => {
         if (!cancelled && json?.ok) {

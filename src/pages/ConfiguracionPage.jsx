@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { apiFetch } from '../lib/api'
 
 const TABS = [
   { id: 'general', label: 'General' },
@@ -49,7 +50,7 @@ export default function ConfiguracionPage({ initialTab = 'general' }) {
   useEffect(() => {
     if (activeTab !== 'usuarios') return
     let cancelled = false
-    fetch('/api/config/usuarios')
+    apiFetch('/api/config/usuarios')
       .then((res) => (res.ok ? res.json() : null))
       .then((json) => {
         if (!cancelled && json?.ok) {

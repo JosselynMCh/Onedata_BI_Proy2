@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import PageLoader from '../components/PageLoader'
+import { apiFetch } from '../lib/api'
 
 export default function AreaGestionHumanaPage() {
   const [data, setData] = useState(null)
@@ -8,7 +9,7 @@ export default function AreaGestionHumanaPage() {
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/areas/gestion-humana')
+    apiFetch('/api/areas/gestion-humana')
       .then((res) => (res.ok ? res.json() : null))
       .then((json) => {
         if (!cancelled && json?.ok) setData(json.data)

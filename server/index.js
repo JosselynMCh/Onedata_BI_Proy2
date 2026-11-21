@@ -10,7 +10,16 @@ dotenv.config()
 const app = express()
 const port = Number(process.env.PORT) || 3001
 
-app.use(cors())
+const allowedOrigins = (process.env.CORS_ORIGIN || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean)
+
+app.use(
+  cors({
+    origin: allowedOrigins.length > 0 ? allowedOrigins : true,
+  }),
+)
 app.use(express.json())
 
 function verifyPassword(plainPassword, storedHash) {

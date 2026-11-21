@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import PageLoader from '../components/PageLoader'
+import { apiFetch } from '../lib/api'
 
 const MARKET_COLORS = ['#0d6efd', '#10b981', '#f59e0b', '#6366f1']
 
@@ -11,7 +12,7 @@ export default function AreaComercialPage() {
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/areas/comercial')
+    apiFetch('/api/areas/comercial')
       .then((res) => (res.ok ? res.json() : null))
       .then((json) => {
         if (!cancelled && json?.ok) setData(json.data)

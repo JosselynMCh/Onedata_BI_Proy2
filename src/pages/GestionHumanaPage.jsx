@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import PageLoader from '../components/PageLoader'
+import { apiFetch } from '../lib/api'
 
 const DIST_COLORS = ['#0d6efd', '#10b981', '#f59e0b', '#6366f1', '#14b8a6']
 
@@ -178,7 +179,7 @@ export default function GestionHumanaPage({ user, onNavigate }) {
 
   useEffect(() => {
     let cancelled = false
-    fetch('/api/dashboard/gestion-humana')
+    apiFetch('/api/dashboard/gestion-humana')
       .then((res) => (res.ok ? res.json() : null))
       .then((json) => {
         if (!cancelled && json?.ok) setData(json.data)
