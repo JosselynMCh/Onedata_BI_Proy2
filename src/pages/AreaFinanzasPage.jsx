@@ -66,14 +66,14 @@ export default function AreaFinanzasPage({ onNavigate }) {
           </p>
         </div>
 
-        <div>
+        <div className="w-full lg:w-auto">
           <label className="block text-[11px] font-medium text-slate-500 mb-1">
             Área
           </label>
           <select
             value={filterArea}
             onChange={(e) => setFilterArea(e.target.value)}
-            className="h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs sm:text-sm text-slate-700 focus:border-[#0b63d6] focus:outline-none"
+            className="w-full lg:w-auto h-9 rounded-lg border border-slate-200 bg-white px-3 text-xs sm:text-sm text-slate-700 focus:border-[#0b63d6] focus:outline-none"
           >
             {areasOpt.map((a) => (
               <option key={a} value={a}>
@@ -85,7 +85,7 @@ export default function AreaFinanzasPage({ onNavigate }) {
       </div>
 
       {/* Row 1: 5 KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
         <section className="rounded-xl bg-white border border-slate-200/80 shadow-xs p-4">
           <p className="text-xs font-medium text-slate-500">
             Presupuesto Aprobado

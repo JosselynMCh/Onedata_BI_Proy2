@@ -165,7 +165,7 @@ export default function OperacionesPage({ onNavigate }) {
       </div>
 
       {/* Row 1: 5 KPI Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
         <section className="rounded-xl bg-white border border-slate-200/80 shadow-xs p-4">
           <p className="text-xs font-medium text-slate-500">Producción Total</p>
           <p className="text-xl font-extrabold text-[#0d1f3c] mt-1">
