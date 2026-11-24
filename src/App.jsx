@@ -136,8 +136,9 @@ function App() {
             <ReportesDescargasPage onNavigate={setActiveMenu} />
           ) : activeMenu === 'config-usuarios' ? (
             <ConfiguracionPage key="config-usuarios" initialTab="usuarios" />
-          ) : activeMenu === 'config-auditoria' ||
-            activeMenu === 'configuracion' ? (
+          ) : activeMenu === 'config-auditoria' ? (
+            <ConfiguracionPage key="config-auditoria" initialTab="auditoria" />
+          ) : activeMenu === 'configuracion' ? (
             <ConfiguracionPage key="config-general" initialTab="general" />
           ) : activeMenu === 'jira' ? (
             <JiraServicePage />

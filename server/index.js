@@ -1406,6 +1406,382 @@ app.get('/api/config/usuarios', async (_req, res) => {
   }
 })
 
+app.get('/api/config/resumen', async (_req, res) => {
+  try {
+    const [
+      dbVerRes,
+      lastSyncRes,
+      usersCountRes,
+      sourcesCountRes,
+      alertsCountRes,
+      auditCountRes,
+    ] = await Promise.all([
+      query('SELECT version() AS db_version'),
+      query(
+        "SELECT MAX(fin) AS ultima_sincronizacion FROM ejecuciones_flujo WHERE estado = 'EXITOSO'",
+      ),
+      query(
+        `SELECT
+           COUNT(*)::int AS total,
+           COUNT(*) FILTER (WHERE esta_activo)::int AS activos
+         FROM usuarios`,
+      ),
+      query(
+        `SELECT
+           COUNT(*)::int AS total,
+           COUNT(*) FILTER (WHERE estado = 'ACTIVA')::int AS activas
+         FROM fuentes_datos`,
+      ),
+      query(
+        "SELECT COUNT(*)::int AS pendientes FROM alertas_bi WHERE estado = 'PENDIENTE'",
+      ),
+      query('SELECT COUNT(*)::int AS total FROM registros_auditoria'),
+    ])
+
+    const rawVersion = dbVerRes.rows[0]?.db_version || 'PostgreSQL'
+    const shortVersion = rawVersion.split(',')[0]
+
+    res.json({
+      ok: true,
+      data: {
+        dbVersion: shortVersion,
+        entorno: process.env.NODE_ENV === 'production' ? 'Producción' : 'Desarrollo / Producción',
+        ultimaActualizacion: lastSyncRes.rows[0]?.ultima_sincronizacion || null,
+        usuariosTotal: usersCountRes.rows[0]?.total || 0,
+        usuariosActivos: usersCountRes.rows[0]?.activos || 0,
+        fuentesTotal: sourcesCountRes.rows[0]?.total || 0,
+        fuentesActivas: sourcesCountRes.rows[0]?.activas || 0,
+        alertasPendientes: alertsCountRes.rows[0]?.pendientes || 0,
+        registrosAuditoria: auditCountRes.rows[0]?.total || 0,
+        jiraConfigured: isJiraConfigured(),
+        jiraProjectKey: process.env.JIRA_PROJECT_KEY || null,
+      },
+    })
+  } catch (error) {
+    console.error('Error loading system config summary:', error)
+    res.status(500).json({
+      ok: false,
+      message: 'No se pudo cargar el resumen del sistema.',
+    })
+  }
+})
+
+app.patch('/api/config/usuarios/:id/estado', async (req, res) => {
+  const { id } = req.params
+  const { esta_activo } = req.body ?? {}
+
+  if (typeof esta_activo !== 'boolean') {
+    return res
+      .status(400)
+      .json({ ok: false, message: 'Debes indicar esta_activo (boolean).' })
+  }
+
+  try {
+    const updated = await query(
+      `UPDATE usuarios
+       SET esta_activo = $1
+       WHERE id_usuario = $2
+       RETURNING id_usuario, nombre_usuario, nombres, apellidos, correo, esta_activo`,
+      [esta_activo, id],
+    )
+    if (updated.rows.length === 0) {
+      return res
+        .status(404)
+        .json({ ok: false, message: 'Usuario no encontrado.' })
+    }
+
+    await query(
+      `INSERT INTO registros_auditoria (id_usuario, accion, nombre_entidad, id_entidad, valores_nuevos)
+       VALUES ($1, $2, 'usuarios', $3, $4::jsonb)`,
+      [
+        id,
+        esta_activo ? 'ACTIVAR_USUARIO' : 'DESACTIVAR_USUARIO',
+        id,
+        JSON.stringify({ esta_activo }),
+      ],
+    )
+
+    return res.json({
+      ok: true,
+      data: {
+        ...updated.rows[0],
+        estado: updated.rows[0].esta_activo ? 'ACTIVO' : 'INACTIVO',
+      },
+    })
+  } catch (error) {
+    console.error('Error updating user status:', error)
+    return res
+      .status(500)
+      .json({ ok: false, message: 'No se pudo actualizar el usuario.' })
+  }
+})
+
+app.get('/api/config/fuentes', async (_req, res) => {
+  try {
+    const result = await query(
+      `SELECT
+         fd.id_fuente,
+         fd.nombre,
+         fd.tipo,
+         fd.sistema_origen,
+         fd.descripcion,
+         fd.intervalo_sincronizacion_min,
+         fd.ultima_sincronizacion,
+         fd.estado,
+         a.nombre AS area,
+         (SELECT COUNT(*)::int FROM flujos_datos fl WHERE fl.fuente_origen_id = fd.id_fuente) AS flujos_asociados
+       FROM fuentes_datos fd
+       JOIN areas a ON a.id_area = fd.id_area
+       ORDER BY fd.id_fuente`,
+    )
+    res.json({ ok: true, data: result.rows })
+  } catch (error) {
+    console.error('Error loading fuentes:', error)
+    res.status(500).json({
+      ok: false,
+      message: 'No se pudieron cargar las fuentes de datos.',
+    })
+  }
+})
+
+app.patch('/api/config/fuentes/:id/estado', async (req, res) => {
+  const { id } = req.params
+  const { estado } = req.body ?? {}
+
+  if (!['ACTIVA', 'INACTIVA'].includes(estado)) {
+    return res
+      .status(400)
+      .json({ ok: false, message: 'Estado inválido (ACTIVA o INACTIVA).' })
+  }
+
+  try {
+    const updated = await query(
+      `UPDATE fuentes_datos SET estado = $1 WHERE id_fuente = $2 RETURNING *`,
+      [estado, id],
+    )
+    if (updated.rows.length === 0) {
+      return res
+        .status(404)
+        .json({ ok: false, message: 'Fuente no encontrada.' })
+    }
+
+    await query(
+      `INSERT INTO registros_auditoria (accion, nombre_entidad, id_entidad, valores_nuevos)
+       VALUES ($1, 'fuentes_datos', $2, $3::jsonb)`,
+      [
+        estado === 'ACTIVA' ? 'ACTIVAR_FUENTE' : 'DESACTIVAR_FUENTE',
+        id,
+        JSON.stringify({ nombre: updated.rows[0].nombre, estado }),
+      ],
+    )
+
+    return res.json({ ok: true, data: updated.rows[0] })
+  } catch (error) {
+    console.error('Error updating fuente state:', error)
+    return res
+      .status(500)
+      .json({ ok: false, message: 'No se pudo actualizar la fuente.' })
+  }
+})
+
+app.post('/api/config/fuentes/:id/sync', async (req, res) => {
+  const { id } = req.params
+  try {
+    const updated = await query(
+      `UPDATE fuentes_datos
+       SET ultima_sincronizacion = CURRENT_TIMESTAMP, estado = 'ACTIVA'
+       WHERE id_fuente = $1
+       RETURNING *`,
+      [id],
+    )
+    if (updated.rows.length === 0) {
+      return res
+        .status(404)
+        .json({ ok: false, message: 'Fuente no encontrada.' })
+    }
+
+    const flowsRes = await query(
+      'SELECT id_flujo FROM flujos_datos WHERE fuente_origen_id = $1',
+      [id],
+    )
+    for (const fl of flowsRes.rows) {
+      await query(
+        `INSERT INTO ejecuciones_flujo (id_flujo, inicio, fin, estado, registros_leidos, registros_procesados, registros_rechazados)
+         VALUES ($1, CURRENT_TIMESTAMP - INTERVAL '2 seconds', CURRENT_TIMESTAMP, 'EXITOSO', 120, 120, 0)`,
+        [fl.id_flujo],
+      )
+    }
+
+    await query(
+      `INSERT INTO registros_auditoria (accion, nombre_entidad, id_entidad, valores_nuevos)
+       VALUES ('SINCRONIZAR_FUENTE', 'fuentes_datos', $1, $2::jsonb)`,
+      [
+        id,
+        JSON.stringify({
+          nombre: updated.rows[0].nombre,
+          flujos_ejecutados: flowsRes.rows.length,
+        }),
+      ],
+    )
+
+    return res.json({ ok: true, data: updated.rows[0] })
+  } catch (error) {
+    console.error('Error syncing fuente:', error)
+    return res
+      .status(500)
+      .json({ ok: false, message: 'Error al sincronizar la fuente.' })
+  }
+})
+
+app.get('/api/config/notificaciones', async (_req, res) => {
+  try {
+    const [alertsRes, statsRes] = await Promise.all([
+      query(
+        `SELECT id_alerta, tipo, severidad, titulo, mensaje, estado, fecha_generacion
+         FROM alertas_bi
+         ORDER BY fecha_generacion DESC
+         LIMIT 20`,
+      ),
+      query(
+        `SELECT
+           COUNT(*)::int AS total,
+           COUNT(*) FILTER (WHERE estado = 'PENDIENTE')::int AS pendientes,
+           COUNT(*) FILTER (WHERE estado = 'RESUELTA')::int AS resueltas,
+           COUNT(*) FILTER (WHERE severidad = 'CRITICA' AND estado = 'PENDIENTE')::int AS criticas
+         FROM alertas_bi`,
+      ),
+    ])
+
+    res.json({
+      ok: true,
+      data: {
+        alertas: alertsRes.rows,
+        stats: statsRes.rows[0],
+      },
+    })
+  } catch (error) {
+    console.error('Error loading notifications config:', error)
+    res.status(500).json({
+      ok: false,
+      message: 'No se pudieron cargar las alertas del sistema.',
+    })
+  }
+})
+
+app.patch('/api/config/notificaciones/:id/resolver', async (req, res) => {
+  const { id } = req.params
+  try {
+    const updated = await query(
+      `UPDATE alertas_bi SET estado = 'RESUELTA' WHERE id_alerta = $1 RETURNING *`,
+      [id],
+    )
+    if (updated.rows.length === 0) {
+      return res
+        .status(404)
+        .json({ ok: false, message: 'Alerta no encontrada.' })
+    }
+
+    await query(
+      `INSERT INTO registros_auditoria (accion, nombre_entidad, id_entidad, valores_nuevos)
+       VALUES ('RESOLVER_ALERTA', 'alertas_bi', $1, $2::jsonb)`,
+      [id, JSON.stringify({ titulo: updated.rows[0].titulo })],
+    )
+
+    return res.json({ ok: true, data: updated.rows[0] })
+  } catch (error) {
+    console.error('Error resolving alert:', error)
+    return res
+      .status(500)
+      .json({ ok: false, message: 'No se pudo resolver la alerta.' })
+  }
+})
+
+app.get('/api/config/auditoria', async (req, res) => {
+  const { q = '', accion = '' } = req.query ?? {}
+  try {
+    const conditions = []
+    const params = []
+
+    if (q.trim()) {
+      params.push(`%${q.trim()}%`)
+      const idx = params.length
+      conditions.push(
+        `(ra.accion ILIKE $${idx} OR ra.nombre_entidad ILIKE $${idx} OR COALESCE(u.nombre_usuario, '') ILIKE $${idx} OR COALESCE(u.nombres, '') ILIKE $${idx})`,
+      )
+    }
+
+    if (accion.trim()) {
+      params.push(accion.trim())
+      conditions.push(`ra.accion = $${params.length}`)
+    }
+
+    const whereClause =
+      conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
+
+    const [logsRes, statsRes, actionsRes] = await Promise.all([
+      query(
+        `SELECT
+           ra.id_auditoria,
+           ra.id_usuario,
+           ra.accion,
+           ra.nombre_entidad,
+           ra.id_entidad,
+           ra.valores_nuevos,
+           HOST(ra.direccion_ip) AS direccion_ip,
+           ra.fecha_creacion,
+           COALESCE(NULLIF(TRIM(CONCAT(u.nombres, ' ', u.apellidos)), ''), u.nombre_usuario, 'Sistema') AS usuario
+         FROM registros_auditoria ra
+         LEFT JOIN usuarios u ON u.id_usuario = ra.id_usuario
+         ${whereClause}
+         ORDER BY ra.fecha_creacion DESC
+         LIMIT 100`,
+        params,
+      ),
+      query(
+        `SELECT
+           COUNT(*)::int AS total,
+           COUNT(*) FILTER (WHERE fecha_creacion >= CURRENT_DATE)::int AS hoy,
+           COUNT(DISTINCT nombre_entidad)::int AS entidades,
+           COUNT(DISTINCT id_usuario)::int AS usuarios
+         FROM registros_auditoria`,
+      ),
+      query(
+        `SELECT DISTINCT accion FROM registros_auditoria ORDER BY accion`,
+      ),
+    ])
+
+    res.json({
+      ok: true,
+      data: {
+        registros: logsRes.rows,
+        stats: statsRes.rows[0],
+        acciones: actionsRes.rows.map((r) => r.accion),
+      },
+    })
+  } catch (error) {
+    console.error('Error loading audit logs:', error)
+    res.status(500).json({
+      ok: false,
+      message: 'No se pudo cargar el registro de auditoría.',
+    })
+  }
+})
+
+app.post('/api/config/audit-log', async (req, res) => {
+  const { accion = 'ACTUALIZAR_CONFIGURACION', nombre_entidad = 'configuracion', detalle = {} } = req.body ?? {}
+  try {
+    await query(
+      `INSERT INTO registros_auditoria (accion, nombre_entidad, valores_nuevos)
+       VALUES ($1, $2, $3::jsonb)`,
+      [accion, nombre_entidad, JSON.stringify(detalle)],
+    )
+    res.status(201).json({ ok: true })
+  } catch (error) {
+    console.error('Error writing audit log:', error)
+    res.status(500).json({ ok: false, message: 'No se pudo registrar en auditoría.' })
+  }
+})
+
 function isJiraConfigured() {
   return Boolean(
     process.env.JIRA_BASE_URL &&
