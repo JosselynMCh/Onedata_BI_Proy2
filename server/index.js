@@ -1406,22 +1406,74 @@ app.get('/api/config/usuarios', async (_req, res) => {
   }
 })
 
+function isJiraConfigured() {
+  return Boolean(
+    process.env.JIRA_BASE_URL &&
+      process.env.JIRA_EMAIL &&
+      process.env.JIRA_API_TOKEN &&
+      process.env.JIRA_PROJECT_KEY,
+  )
+}
+
+async function jiraRequest(path, options = {}) {
+  const baseUrl = process.env.JIRA_BASE_URL.replace(/\/+$/, '')
+  const auth = Buffer.from(
+    `${process.env.JIRA_EMAIL}:${process.env.JIRA_API_TOKEN}`,
+  ).toString('base64')
+
+  const res = await fetch(`${baseUrl}${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Basic ${auth}`,
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
+  })
+
+  if (!res.ok) {
+    const errText = await res.text()
+    throw new Error(`Jira API ${res.status}: ${errText.slice(0, 250)}`)
+  }
+
+  return res.status === 204 ? null : res.json()
+}
+
+function mapSeverityToJiraPriority(severidad) {
+  switch (severidad) {
+    case 'CRITICA':
+      return 'Highest'
+    case 'ALTA':
+      return 'High'
+    case 'MEDIA':
+      return 'Medium'
+    default:
+      return 'Low'
+  }
+}
+
 app.get('/api/jira/tickets', async (_req, res) => {
   try {
-    const [ticketsRes, statsRes] = await Promise.all([
+    const [ticketsRes, statsRes, alertasSinTicketRes] = await Promise.all([
       query(
         `SELECT
            jt.id_ticket,
+           jt.id_alerta,
            jt.jira_issue_key,
+           jt.proyecto_jira,
+           jt.url_ticket,
            jt.estado_ticket,
            jt.estado_sincronizacion,
+           jt.detalle_error,
            jt.fecha_creacion,
+           jt.ultima_sincronizacion,
            al.titulo,
+           al.mensaje,
            al.severidad
          FROM jira_tickets jt
          JOIN alertas_bi al ON al.id_alerta = jt.id_alerta
          ORDER BY jt.fecha_creacion DESC
-         LIMIT 10`,
+         LIMIT 25`,
       ),
       query(
         `SELECT
@@ -1430,13 +1482,23 @@ app.get('/api/jira/tickets', async (_req, res) => {
            COUNT(*) FILTER (WHERE estado_ticket IN ('Resuelto', 'Cerrado'))::int AS resueltos
          FROM jira_tickets`,
       ),
+      query(
+        `SELECT al.id_alerta, al.titulo, al.severidad
+         FROM alertas_bi al
+         LEFT JOIN jira_tickets jt ON jt.id_alerta = al.id_alerta
+         WHERE jt.id_ticket IS NULL
+         ORDER BY al.fecha_generacion DESC`,
+      ),
     ])
 
     res.json({
       ok: true,
       data: {
+        jiraConfigured: isJiraConfigured(),
+        projectKey: process.env.JIRA_PROJECT_KEY || null,
         tickets: ticketsRes.rows,
         stats: statsRes.rows[0],
+        alertasSinTicket: alertasSinTicketRes.rows,
       },
     })
   } catch (error) {
@@ -1444,6 +1506,295 @@ app.get('/api/jira/tickets', async (_req, res) => {
     res.status(500).json({
       ok: false,
       message: 'No se pudieron cargar los tickets de Jira.',
+    })
+  }
+})
+
+app.post('/api/jira/tickets', async (req, res) => {
+  const { id_alerta, titulo, mensaje, severidad = 'MEDIA' } = req.body ?? {}
+
+  if (!id_alerta && !titulo?.trim()) {
+    return res.status(400).json({
+      ok: false,
+      message: 'Debes indicar un título o seleccionar una alerta.',
+    })
+  }
+
+  try {
+    let alertaId = id_alerta
+    let alertTitle = titulo?.trim()
+    let alertMsg = mensaje?.trim() || alertTitle
+    let alertSev = severidad
+
+    if (!alertaId) {
+      const newAlert = await query(
+        `INSERT INTO alertas_bi (tipo, severidad, titulo, mensaje, estado)
+         VALUES ('INTEGRACION', $1, $2, $3, 'PENDIENTE')
+         RETURNING id_alerta, titulo, mensaje, severidad`,
+        [alertSev, alertTitle, alertMsg],
+      )
+      alertaId = newAlert.rows[0].id_alerta
+    } else {
+      const existing = await query(
+        'SELECT id_alerta, titulo, mensaje, severidad FROM alertas_bi WHERE id_alerta = $1',
+        [alertaId],
+      )
+      if (existing.rows.length === 0) {
+        return res
+          .status(404)
+          .json({ ok: false, message: 'Alerta no encontrada.' })
+      }
+      alertTitle = existing.rows[0].titulo
+      alertMsg = existing.rows[0].mensaje
+      alertSev = existing.rows[0].severidad
+    }
+
+    let jiraKey = null
+    let jiraId = null
+    let urlTicket = null
+    let estadoSync = 'PENDIENTE'
+    let estadoTicket = 'Abierto'
+    let detalleError = null
+
+    if (isJiraConfigured()) {
+      try {
+        let issueTypeName = process.env.JIRA_ISSUE_TYPE || ''
+        if (!issueTypeName) {
+          const proj = await jiraRequest(
+            `/rest/api/3/project/${encodeURIComponent(process.env.JIRA_PROJECT_KEY)}`,
+          )
+          const types = (proj?.issueTypes || []).filter((t) => !t.subtask)
+          const preferred = types.find((t) =>
+            ['task', 'tarea', 'incident', 'incidente'].includes(
+              (t.name || '').toLowerCase(),
+            ),
+          )
+          issueTypeName = preferred?.name || types[0]?.name || 'Task'
+        }
+
+        const created = await jiraRequest('/rest/api/3/issue', {
+          method: 'POST',
+          body: JSON.stringify({
+            fields: {
+              project: { key: process.env.JIRA_PROJECT_KEY },
+              summary: alertTitle,
+              description: {
+                type: 'doc',
+                version: 1,
+                content: [
+                  {
+                    type: 'paragraph',
+                    content: [{ type: 'text', text: alertMsg }],
+                  },
+                ],
+              },
+              issuetype: { name: issueTypeName },
+              priority: { name: mapSeverityToJiraPriority(alertSev) },
+            },
+          }),
+        })
+
+        jiraKey = created.key
+        jiraId = created.id
+        urlTicket = `${process.env.JIRA_BASE_URL.replace(/\/+$/, '')}/browse/${created.key}`
+        estadoSync = 'SINCRONIZADO'
+        estadoTicket = 'Por hacer'
+      } catch (err) {
+        estadoSync = 'ERROR'
+        detalleError = err.message
+      }
+    }
+
+    const inserted = await query(
+      `INSERT INTO jira_tickets (
+         id_alerta, jira_issue_key, jira_issue_id, proyecto_jira,
+         url_ticket, estado_sincronizacion, estado_ticket,
+         ultima_sincronizacion, detalle_error
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING *`,
+      [
+        alertaId,
+        jiraKey,
+        jiraId,
+        process.env.JIRA_PROJECT_KEY || 'ONEDATA',
+        urlTicket,
+        estadoSync,
+        estadoTicket,
+        estadoSync === 'SINCRONIZADO' ? new Date() : null,
+        detalleError,
+      ],
+    )
+
+    return res.status(201).json({
+      ok: true,
+      ticket: inserted.rows[0],
+      syncedWithJira: estadoSync === 'SINCRONIZADO',
+    })
+  } catch (error) {
+    console.error('Error creating Jira ticket:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'No se pudo crear el ticket.',
+    })
+  }
+})
+
+app.patch('/api/jira/tickets/:id', async (req, res) => {
+  const { id } = req.params
+  const { estado_ticket } = req.body ?? {}
+
+  if (!estado_ticket) {
+    return res
+      .status(400)
+      .json({ ok: false, message: 'Debes indicar el nuevo estado.' })
+  }
+
+  try {
+    const ticketRes = await query(
+      'SELECT * FROM jira_tickets WHERE id_ticket = $1',
+      [id],
+    )
+    if (ticketRes.rows.length === 0) {
+      return res
+        .status(404)
+        .json({ ok: false, message: 'Ticket no encontrado.' })
+    }
+
+    const ticket = ticketRes.rows[0]
+
+    if (isJiraConfigured() && ticket.jira_issue_key) {
+      try {
+        const transRes = await jiraRequest(
+          `/rest/api/3/issue/${ticket.jira_issue_key}/transitions`,
+        )
+        const target = (transRes.transitions || []).find((t) =>
+          t.name.toLowerCase().includes(estado_ticket.toLowerCase()),
+        )
+        if (target) {
+          await jiraRequest(
+            `/rest/api/3/issue/${ticket.jira_issue_key}/transitions`,
+            {
+              method: 'POST',
+              body: JSON.stringify({ transition: { id: target.id } }),
+            },
+          )
+        }
+      } catch (err) {
+        console.error('Jira transition warning:', err.message)
+      }
+    }
+
+    const updated = await query(
+      `UPDATE jira_tickets
+       SET estado_ticket = $1, ultima_sincronizacion = CURRENT_TIMESTAMP
+       WHERE id_ticket = $2
+       RETURNING *`,
+      [estado_ticket, id],
+    )
+
+    if (estado_ticket === 'Resuelto' || estado_ticket === 'Cerrado') {
+      await query(
+        "UPDATE alertas_bi SET estado = 'RESUELTA' WHERE id_alerta = $1",
+        [ticket.id_alerta],
+      )
+    }
+
+    return res.json({ ok: true, ticket: updated.rows[0] })
+  } catch (error) {
+    console.error('Error updating Jira ticket:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'No se pudo actualizar el estado del ticket.',
+    })
+  }
+})
+
+app.post('/api/jira/sync', async (_req, res) => {
+  if (!isJiraConfigured()) {
+    return res.status(400).json({
+      ok: false,
+      message:
+        'Faltan variables de Jira (JIRA_BASE_URL, JIRA_EMAIL, JIRA_API_TOKEN, JIRA_PROJECT_KEY) en el backend.',
+    })
+  }
+
+  try {
+    const rowsRes = await query(
+      `SELECT jt.*, al.titulo, al.mensaje, al.severidad
+       FROM jira_tickets jt
+       JOIN alertas_bi al ON al.id_alerta = jt.id_alerta`,
+    )
+
+    let syncedCount = 0
+    for (const row of rowsRes.rows) {
+      try {
+        if (!row.jira_issue_key) {
+          const created = await jiraRequest('/rest/api/3/issue', {
+            method: 'POST',
+            body: JSON.stringify({
+              fields: {
+                project: { key: process.env.JIRA_PROJECT_KEY },
+                summary: row.titulo,
+                description: {
+                  type: 'doc',
+                  version: 1,
+                  content: [
+                    {
+                      type: 'paragraph',
+                      content: [{ type: 'text', text: row.mensaje || row.titulo }],
+                    },
+                  ],
+                },
+                issuetype: { name: 'Task' },
+                priority: { name: mapSeverityToJiraPriority(row.severidad) },
+              },
+            }),
+          })
+          const urlTicket = `${process.env.JIRA_BASE_URL.replace(/\/+$/, '')}/browse/${created.key}`
+          await query(
+            `UPDATE jira_tickets
+             SET jira_issue_key = $1, jira_issue_id = $2, url_ticket = $3,
+                 estado_sincronizacion = 'SINCRONIZADO', estado_ticket = 'Por hacer',
+                 ultima_sincronizacion = CURRENT_TIMESTAMP, detalle_error = NULL
+             WHERE id_ticket = $4`,
+            [created.key, created.id, urlTicket, row.id_ticket],
+          )
+          syncedCount++
+        } else {
+          const remote = await jiraRequest(
+            `/rest/api/3/issue/${row.jira_issue_key}?fields=status`,
+          )
+          const remoteStatus = remote?.fields?.status?.name || row.estado_ticket
+          await query(
+            `UPDATE jira_tickets
+             SET estado_ticket = $1, estado_sincronizacion = 'SINCRONIZADO',
+                 ultima_sincronizacion = CURRENT_TIMESTAMP, detalle_error = NULL
+             WHERE id_ticket = $2`,
+            [remoteStatus, row.id_ticket],
+          )
+          syncedCount++
+        }
+      } catch (err) {
+        await query(
+          `UPDATE jira_tickets
+           SET estado_sincronizacion = 'ERROR', detalle_error = $1
+           WHERE id_ticket = $2`,
+          [err.message, row.id_ticket],
+        )
+      }
+    }
+
+    return res.json({
+      ok: true,
+      syncedCount,
+      message: `${syncedCount} tickets sincronizados con Jira Cloud.`,
+    })
+  } catch (error) {
+    console.error('Error syncing with Jira:', error)
+    return res.status(500).json({
+      ok: false,
+      message: 'Error al sincronizar con Jira Cloud.',
     })
   }
 })
