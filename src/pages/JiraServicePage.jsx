@@ -48,6 +48,17 @@ export default function JiraServicePage() {
 
   useEffect(() => {
     void Promise.resolve().then(loadTickets)
+    const interval = setInterval(() => {
+      void loadTickets()
+    }, 15000)
+    const onFocus = () => {
+      void loadTickets()
+    }
+    window.addEventListener('focus', onFocus)
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener('focus', onFocus)
+    }
   }, [loadTickets])
 
   const handleCreateTicket = async (e) => {
@@ -451,17 +462,27 @@ export default function JiraServicePage() {
                       </td>
                       <td className="py-3 px-3 whitespace-nowrap">
                         <select
-                          value={t.estado_ticket || 'Abierto'}
+                          value={t.estado_ticket || 'Tareas por hacer'}
                           onChange={(e) =>
                             handleStatusChange(t.id_ticket, e.target.value)
                           }
                           className="h-7 rounded-md border border-slate-200 bg-white px-2 text-[11px] font-semibold text-slate-700 focus:border-[#0b63d6] focus:outline-none cursor-pointer"
                         >
-                          <option value="Por hacer">Por hacer</option>
-                          <option value="Abierto">Abierto</option>
-                          <option value="En progreso">En progreso</option>
-                          <option value="Resuelto">Resuelto</option>
-                          <option value="Cerrado">Cerrado</option>
+                          <option value="Tareas por hacer">
+                            Tareas por hacer
+                          </option>
+                          <option value="En curso">En curso</option>
+                          <option value="Finalizada">Finalizada</option>
+                          {t.estado_ticket &&
+                            ![
+                              'Tareas por hacer',
+                              'En curso',
+                              'Finalizada',
+                            ].includes(t.estado_ticket) && (
+                              <option value={t.estado_ticket}>
+                                {t.estado_ticket}
+                              </option>
+                            )}
                         </select>
                       </td>
                       <td className="py-3 px-3 whitespace-nowrap">
